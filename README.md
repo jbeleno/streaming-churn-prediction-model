@@ -25,7 +25,7 @@ streaming-churn-prediction-model/
 └── README.md                  # This file
 ```
 
-**Nota:** Los modelos entrenados (`best_rf_label.pkl`, `best_xgb_label.pkl`, `best_logistic_regression.pkl`) se generan automáticamente al ejecutar el notebook completo.
+**Note:** The trained models (`best_rf_label.pkl`, `best_xgb_label.pkl`, `best_logistic_regression.pkl`) are automatically generated when executing the complete notebook.
 
 ## 🔍 Data Analysis
 
