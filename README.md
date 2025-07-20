@@ -22,11 +22,10 @@ streaming-churn-prediction-model/
 ├── modelochurd.ipynb          # Main notebook with complete analysis
 ├── train.csv                  # Training dataset
 ├── test.csv                   # Test dataset
-├── best_rf_label.pkl          # Trained Random Forest model
-├── best_xgb_label.pkl         # Trained XGBoost model
-├── best_logistic_regression.pkl # Trained Logistic Regression model
 └── README.md                  # This file
 ```
+
+**Nota:** Los modelos entrenados (`best_rf_label.pkl`, `best_xgb_label.pkl`, `best_logistic_regression.pkl`) se generan automáticamente al ejecutar el notebook completo.
 
 ## 🔍 Data Analysis
 
@@ -89,12 +88,13 @@ pip install pandas numpy scikit-learn xgboost seaborn matplotlib
 1. Clone the repository
 2. Open `modelochurd.ipynb` in Jupyter Notebook
 3. Run all cells to reproduce the complete analysis
+4. Los modelos entrenados se guardarán automáticamente como archivos `.pkl`
 
 ### Using Trained Models:
 ```python
 import pickle
 
-# Load model
+# Load model (se genera al ejecutar el notebook)
 with open('best_rf_label.pkl', 'rb') as f:
     model = pickle.load(f)
 
@@ -102,6 +102,8 @@ with open('best_rf_label.pkl', 'rb') as f:
 predictions = model.predict(X_new_data)
 probabilities = model.predict_proba(X_new_data)
 ```
+
+**Importante:** Los archivos `.pkl` de los modelos se crean automáticamente al ejecutar todas las celdas del notebook `modelochurd.ipynb`. Si no existen, ejecuta el notebook completo para generarlos.
 
 ## 📊 Evaluation Metrics
 
@@ -163,16 +165,6 @@ probabilities = model.predict_proba(X_new_data)
 - ROC and Precision-Recall curves
 - Churn analysis by categories
 
-## 🤝 Contributing
-
-Contributions are welcome. Please:
-
-1. Fork the project
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
 ## 📄 License
 
 This project is under the MIT License. See the `LICENSE` file for more details.
@@ -180,21 +172,14 @@ This project is under the MIT License. See the `LICENSE` file for more details.
 ## 👨‍💻 Author
 
 **Your Name**
-- LinkedIn: [Your LinkedIn]
-- Email: your.email@example.com
+- LinkedIn: https://www.linkedin.com/in/jesus-beleno/
+- Email: jesusbelenov@gmail.com
 
 ## 🙏 Acknowledgments
 
-- Dataset provided by [dataset source]
+- Dataset provided by [https://www.kaggle.com/competitions/streaming-subscription-churn-model/team]
 - Data Science community
 - Open source tools used
-
-## 📞 Contact
-
-For questions or collaborations:
-- 📧 Email: your.email@example.com
-- 💼 LinkedIn: [Your LinkedIn]
-- 🐦 Twitter: [@your_twitter]
 
 ---
 
