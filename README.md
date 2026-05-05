@@ -118,40 +118,76 @@ Sobre el set de validación se computan:
 
 ## Reproducir
 
+### Setup
+
 ```bash
 git clone https://github.com/jbeleno/streaming-churn-prediction-model.git
 cd streaming-churn-prediction-model
 
-pip install pandas numpy scikit-learn xgboost seaborn matplotlib
-
-jupyter notebook modelochurd.ipynb
-# Ejecutar todas las celdas en orden
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
 ```
 
-Al ejecutar el notebook completo se generan los modelos serializados:
+> **macOS:** XGBoost necesita OpenMP. `brew install libomp` si todavía no lo tienes.
 
-- `best_rf_label.pkl` — Random Forest (mejor modelo)
-- `best_xgb_label.pkl` — XGBoost
-- `best_logistic_regression.pkl` — Logistic Regression
+### Entrenamiento (CLI)
 
-> No se incluyen en el repositorio por tamaño/peso de archivos.
+```bash
+# Entrenamiento completo (n_iter=20, ~10-20 min según hardware)
+python -m src.train
 
-## Inferencia con el modelo entrenado
+# Smoke test rápido con subsample de 5k filas y n_iter=3 (~1 min)
+python -m src.train --quick --n-iter 3
+
+# Entrenar solo un subconjunto de modelos
+python -m src.train --models rf logreg
+
+# Custom output directory
+python -m src.train --output ./my_artifacts
+```
+
+Genera en `artifacts/`:
+
+- `rf.joblib` — Random Forest (Pipeline completo: preprocessor + estimator)
+- `xgboost.joblib` — XGBoost (idem)
+- `logreg.joblib` — Logistic Regression (idem)
+- `metrics.json` — métricas de validación de cada modelo
+
+### Inferencia (CLI)
+
+```bash
+python -m src.predict --model artifacts/rf.joblib --input test.csv --output predictions.csv
+```
+
+Salida: CSV con `prediction` (0/1) y `churn_probability` (P(churn=1)).
+
+### Inferencia (Python)
 
 ```python
-import pickle
+import joblib
 import pandas as pd
+from src.preprocessing import add_tenure_features
 
-with open("best_rf_label.pkl", "rb") as f:
-    model = pickle.load(f)
+pipeline = joblib.load("artifacts/rf.joblib")
 
-# X_new debe tener las mismas 20 columnas que X_train_label,
-# con el mismo Label Encoding aplicado a las categóricas.
-predictions = model.predict(X_new)
-probabilities = model.predict_proba(X_new)[:, 1]  # P(churn=1)
+X_new = pd.read_csv("nuevos_usuarios.csv")
+X_new = add_tenure_features(X_new)        # genera customer_tenure_*
+preds = pipeline.predict(X_new)
+proba = pipeline.predict_proba(X_new)[:, 1]
 ```
 
-> Para usar en producción, considerar migrar de `pickle` a `joblib` (estándar sklearn, más eficiente para modelos grandes con arrays NumPy) o exportar a ONNX para portabilidad multi-runtime.
+El `Pipeline` ya contiene el preprocessor (StandardScaler + OneHotEncoder), así que **no hay que aplicar transformaciones manualmente**. Esto es la diferencia clave con la versión 1.x basada en `pickle` + transformaciones inline en el notebook.
+
+### Tests unitarios
+
+```bash
+pytest tests/ -v
+# 7 tests cubriendo preprocessing, encoding de unknowns, y pipeline end-to-end
+```
+
+### Notebook original
+
+`modelochurd.ipynb` se mantiene como referencia histórica del análisis exploratorio (EDA + iteración de modelos). Para reproducir resultados, **usar el CLI**.
 
 ---
 
@@ -159,9 +195,20 @@ probabilities = model.predict_proba(X_new)[:, 1]  # P(churn=1)
 
 ```
 streaming-churn-prediction-model/
-├── modelochurd.ipynb          # Notebook principal (EDA + tuning + evaluación)
-├── train.csv                  # Dataset de entrenamiento (125k filas)
-├── test.csv                   # Dataset de prueba
+├── src/                       # Pipeline modular (v2.0)
+│   ├── config.py              # Constantes, columnas, hiperparámetros, paths
+│   ├── preprocessing.py       # ColumnTransformer + Pipeline + feature engineering
+│   ├── train.py               # CLI de entrenamiento (RandomForest, XGBoost, LogReg)
+│   ├── predict.py             # CLI de inferencia
+│   └── eval.py                # Métricas con dataclass ModelMetrics
+├── tests/
+│   └── test_preprocessing.py  # 7 tests sobre el pipeline
+├── modelochurd.ipynb          # Notebook EDA original (referencia histórica)
+├── train.csv                  # 125k filas
+├── test.csv
+├── requirements.txt           # Runtime deps (pandas, sklearn, xgboost, joblib)
+├── requirements-dev.txt       # + pytest
+├── pyproject.toml             # Versioning, pytest config
 ├── LICENSE                    # MIT
 └── README.md
 ```
@@ -170,14 +217,26 @@ streaming-churn-prediction-model/
 
 ## Mejoras pendientes (deuda técnica reconocida)
 
-- **Pipeline scikit-learn unificado** (`Pipeline`) que combine encoding + escalado + modelo en un solo objeto. Hoy las transformaciones están sueltas en el notebook.
 - **SMOTE / class weighting**: si hay desbalance significativo, probar oversampling de la clase minoritaria.
-- **Tuning más agresivo de XGBoost**: el resultado actual (AUC 0.873) probablemente sube con búsqueda sobre `max_depth`, `subsample`, `colsample_bytree`, `learning_rate`.
+- **Tuning más agresivo de XGBoost**: el resultado actual (AUC 0.873) probablemente sube con búsqueda sobre `subsample`, `colsample_bytree`, `min_child_weight`, `gamma`.
 - **SHAP** para interpretabilidad por instancia, no solo feature importance global.
 - **CalibratedClassifierCV** si las probabilidades se van a usar para decisiones de negocio (la calibración importa más que el AUC para retención dirigida).
-- **Migrar pickle → joblib** para serialización.
-- **Tests unitarios** sobre las funciones de preprocesamiento.
-- **Refactor del notebook a módulos** (`src/preprocessing.py`, `src/models.py`, `src/eval.py`) para reproducibilidad y CI.
+- **CI con GitHub Actions** corriendo `pytest` en cada PR.
+- **MLflow tracking** para registrar runs, hiperparámetros y artefactos automáticamente.
+- **Validación temporal**: si los datos tienen orden temporal, usar `TimeSeriesSplit` en lugar de `StratifiedKFold` para evitar leak.
+
+### Modernización aplicada en v2.0
+
+Lo que **ya está hecho** (vs v1.x notebook-only):
+
+- ✅ Notebook → módulos en `src/` (config, preprocessing, train, predict, eval).
+- ✅ `Pipeline` scikit-learn unificado con `ColumnTransformer` (StandardScaler + OneHotEncoder).
+- ✅ `pickle` → `joblib` (estándar sklearn, eficiente con arrays NumPy).
+- ✅ CLIs con `argparse` (`--quick`, `--n-iter`, `--models`, `--output`).
+- ✅ Tests unitarios con pytest (7 tests sobre preprocessing).
+- ✅ Persistencia de `Pipeline` completo (preprocessor + modelo) en un solo `.joblib` — sin transformar manualmente al inferir.
+- ✅ Manejo de categorías nunca vistas (`OneHotEncoder(handle_unknown='ignore')`).
+- ✅ `pyproject.toml` con versioning + pytest config.
 
 ---
 
