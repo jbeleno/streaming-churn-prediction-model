@@ -4,13 +4,34 @@ Usage:
     python -m src.train                       # full search (n_iter=20)
     python -m src.train --n-iter 3 --quick    # smoke test (~1 min)
     python -m src.train --models rf logreg    # subset of models
+    python -m src.train --n-jobs 1            # parallelism (default: 1, safest)
     python -m src.train --output ./artifacts  # custom artifact dir
 
 Artifacts written to ``artifacts/``:
     - <model>.joblib       — pipeline (preprocessor + model)
     - metrics.json         — validation metrics per model
+
+⚠️  Memory note: this script caps thread counts at the C-library level
+(OpenMP, BLAS, MKL) **before** importing pandas / numpy / scikit-learn /
+xgboost. Without this, on macOS the combination of joblib multiprocessing
+and OpenMP/BLAS can spawn dozens of threads per worker and balloon RSS.
+Override ``--n-jobs`` carefully if you have lots of RAM.
 """
 from __future__ import annotations
+
+import os
+
+# IMPORTANT: must run before any numpy/pandas/sklearn/xgboost import.
+# Each library reads these env vars once on import; setting them later is
+# a no-op. ``1`` keeps memory predictable on smaller machines.
+for _var in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(_var, "1")
 
 import argparse
 import json
@@ -51,14 +72,28 @@ log = logging.getLogger("train")
 ALL_MODELS = ("rf", "xgboost", "logreg")
 
 
-def _make_search(model_key: str, n_iter: int, quick: bool):
-    """Return (estimator, search_strategy, param_grid) for a given model key."""
+def _default_n_jobs() -> int:
+    """Conservative default: serial.
+
+    On macOS Apple Silicon the combo of joblib multiprocessing + OpenMP
+    (libomp from XGBoost) + Accelerate/OpenBLAS (from NumPy/sklearn) has
+    been observed to balloon memory by spawning many internal threads per
+    worker. Default to 1 and let users opt-in to more if they trust their
+    setup.
+    """
+    return 1
+
+
+def _make_search(model_key: str, n_iter: int, quick: bool, n_jobs: int):
+    """Return a configured CV search for the given model key."""
     cv = StratifiedKFold(n_splits=CV_SPLITS, shuffle=True, random_state=RANDOM_STATE)
     scorer = make_scorer(roc_auc_score, response_method="predict_proba")
 
     if model_key == "rf":
         pipeline = make_pipeline(
-            RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=-1)
+            # n_jobs=1 inside the model — parallelism happens at the search level
+            # so we don't double-spawn workers.
+            RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=1)
         )
         return RandomizedSearchCV(
             pipeline,
@@ -67,7 +102,7 @@ def _make_search(model_key: str, n_iter: int, quick: bool):
             scoring=scorer,
             cv=cv,
             random_state=RANDOM_STATE,
-            n_jobs=-1,
+            n_jobs=n_jobs,
             verbose=1,
         )
 
@@ -76,7 +111,7 @@ def _make_search(model_key: str, n_iter: int, quick: bool):
             XGBClassifier(
                 eval_metric="logloss",
                 random_state=RANDOM_STATE,
-                n_jobs=-1,
+                n_jobs=1,
                 tree_method="hist",
             )
         )
@@ -87,22 +122,21 @@ def _make_search(model_key: str, n_iter: int, quick: bool):
             scoring=scorer,
             cv=cv,
             random_state=RANDOM_STATE,
-            n_jobs=-1,
+            n_jobs=n_jobs,
             verbose=1,
         )
 
     if model_key == "logreg":
         pipeline = make_pipeline(
-            LogisticRegression(random_state=RANDOM_STATE, max_iter=1000)
+            LogisticRegression(random_state=RANDOM_STATE, max_iter=1000, n_jobs=1)
         )
-        # Grid for logreg is small — exhaustive search.
         if quick:
             return GridSearchCV(
                 pipeline,
                 param_grid={"model__C": [1.0], "model__penalty": ["l2"], "model__solver": ["lbfgs"]},
                 scoring=scorer,
                 cv=cv,
-                n_jobs=-1,
+                n_jobs=n_jobs,
                 verbose=1,
             )
         return GridSearchCV(
@@ -110,7 +144,7 @@ def _make_search(model_key: str, n_iter: int, quick: bool):
             param_grid=LOGREG_PARAM_GRID,
             scoring=scorer,
             cv=cv,
-            n_jobs=-1,
+            n_jobs=n_jobs,
             verbose=1,
         )
 
@@ -158,6 +192,12 @@ def main() -> None:
         help="Subsample to 5k rows and skip exhaustive logreg grid (fast smoke test)",
     )
     parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=_default_n_jobs(),
+        help="Parallel workers for CV search (default: half of physical cores)",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=ARTIFACTS_DIR,
@@ -170,6 +210,7 @@ def main() -> None:
         help="Path to training CSV",
     )
     args = parser.parse_args()
+    log.info("n_jobs=%d (override with --n-jobs)", args.n_jobs)
 
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -188,7 +229,9 @@ def main() -> None:
     results = []
     for model_key in args.models:
         log.info("--- Training %s ---", model_key)
-        search = _make_search(model_key, n_iter=args.n_iter, quick=args.quick)
+        search = _make_search(
+            model_key, n_iter=args.n_iter, quick=args.quick, n_jobs=args.n_jobs
+        )
         search.fit(X_train, y_train)
 
         best = search.best_estimator_
